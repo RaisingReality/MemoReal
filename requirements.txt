@@ -4,7 +4,6 @@ torchvision --index-url https://download.pytorch.org/whl/cpu
 torchaudio --index-url https://download.pytorch.org/whl/cpu
 h5py
 matplotlib
-matplotlib-base
 opencv==4.6.0
 scipy
 timm==0.6.13

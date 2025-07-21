@@ -10,7 +10,9 @@ COPY requirements.txt .
 RUN pip3 install --upgrade pip setuptools wheel
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py /app/app.py
+COPY zoedepth /app/zoedepth
+WORKDIR /app
 
 EXPOSE 5000
 

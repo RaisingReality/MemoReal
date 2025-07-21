@@ -11,7 +11,7 @@ from zoedepth.models.builder import build_model
 from zoedepth.utils.config import get_config
 
 # --- Configuration ---
-GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'MemoReal-Bucket')
+GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'memoreal-bucket')
 
 # --- App Initialization ---
 app = Flask(__name__)

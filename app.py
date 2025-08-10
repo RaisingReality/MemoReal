@@ -132,7 +132,7 @@ def generate_scene():
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
 
-    if not model or not s3_client:
+    if not point_cloud_model or not s3_client:
         return jsonify({"error": "Server not ready or misconfigured. Check model and S3 configuration."}), 503
 
     try:
@@ -141,13 +141,13 @@ def generate_scene():
 
         input_image = np.array(Image.open(file.stream))
         image_tensor = torch.from_numpy(input_image).permute(2, 0, 1).unsqueeze(0).float()
-        device = next(model.parameters()).device
+        device = next(point_cloud_model.parameters()).device
         image_tensor = image_tensor.to(device)
 
 
         # Perform inference with the model.
         print("Running UniK3D inference...")
-        outputs = model.infer(image_tensor, camera=None, normalize=True)
+        outputs = point_cloud_model.infer(image_tensor, camera=None, normalize=True)
         outputs["image"] = image_tensor
 
         # Convert predictions to GLB

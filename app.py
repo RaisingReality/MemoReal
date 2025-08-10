@@ -172,7 +172,6 @@ def generate_scene():
             Key=object_name,
             Body=glb_data,
             ContentType='model/gltf-binary',
-            ACL='public-read'  # Makes the object publicly accessible via URL
         )
 
         print(f"Uploaded to S3: {S3_BUCKET_NAME}/{object_name}")
@@ -234,7 +233,6 @@ def generate_360_scene():
             Key=object_name,
             Body=glb_data,
             ContentType='model/gltf-binary',
-            ACL='public-read'  # Makes the object publicly accessible via URL
         )
 
         print(f"Uploaded to S3: {S3_BUCKET_NAME}/{object_name}")

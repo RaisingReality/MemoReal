@@ -193,7 +193,7 @@ def generate_360_scene():
         with torch.no_grad():
             depth_tensor = model.infer_pil(image_pil)
 
-        pts3d = pano_depth_to_world_points(depth_tensor.cpu().numpy())
+        pts3d = pano_depth_to_world_points(depth_tensor)
         image = np.array(image_pil)
         triangles = create_triangles(image.shape[0], image.shape[1])
         colors = image.reshape(-1, 3)

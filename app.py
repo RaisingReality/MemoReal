@@ -3,8 +3,6 @@ import gc
 import uuid
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask import Response
-import requests
 from PIL import Image
 import torch
 import numpy as np
@@ -250,31 +248,6 @@ def generate_360_scene():
         return jsonify({"error": "AWS credentials not found. Configure credentials or IAM role."}), 500
     except Exception as e:
         return jsonify({"error": f"An error occurred: {e}"}), 500
-
-@app.route('/proxy-glb', methods=['GET'])
-def proxy_glb():
-    """Proxy GLB files to avoid CORS issues"""
-    url = request.args.get('url')
-    if not url:
-        return jsonify({"error": "No URL provided"}), 400
-    
-    try:
-        # Fetch the GLB file from S3
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        # Return the GLB file with proper CORS headers
-        return Response(
-            response.content,
-            content_type='model/gltf-binary',
-            headers={
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET',
-                'Access-Control-Allow-Headers': 'Content-Type'
-            }
-        )
-    except Exception as e:
-        return jsonify({"error": f"Failed to proxy GLB: {e}"}), 500
 
 
 # --- Run App ---

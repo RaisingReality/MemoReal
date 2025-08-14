@@ -13,6 +13,10 @@ from zoedepth.models.builder import build_model
 from zoedepth.utils.config import get_config
 from unik3d.models import UniK3D
 
+from gradio_client import Client, handle_file
+import ffmpeg
+import json
+
 # --- Configuration ---
 S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
 AWS_REGION = os.environ.get('AWS_REGION')
@@ -216,6 +220,143 @@ def generate_360_scene():
     except Exception as e:
         print(f"An error occurred in /generate-360-scene: {e}")
         return jsonify({"error": f"An error occurred: {e}"}), 500
+    
+
+# --- 3D Video Generation ---
+@app.route('/generate-video', methods=['POST'])
+def generate_video():
+    if 'file' not in request.files: return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '': return jsonify({"error": "No selected file"}), 400
+    if not s3_client: return jsonify({"error": "S3 client not configured."}), 503
+
+    try:
+        client = Client("depth-anything/Video-Depth-Anything")
+        result = client.predict(
+            input_video={"video":handle_file(file.stream)},
+            max_len=500,
+            target_fps=30,
+            max_res=1920,
+            grayscale=True,
+            api_name="/infer_video_depth")
+        
+        video_paths = [item['video'] for item in result if item.get('video')]
+
+        # --- Configuration ---
+        GRID_WIDTH = 512
+        GRID_HEIGHT = 256
+        # --- IMPORTANT: Update these filenames to match your files ---
+        INPUT_COLOR_VIDEO = video_paths[0]
+        INPUT_DEPTH_VIDEO = video_paths[1]
+        unique_id = str(uuid.uuid4())
+        OUTPUT_VIDEO = f"hologram_video_{unique_id}.mp4"
+        DELETE_LOCAL_VIDEO_AFTER_UPLOAD = True
+
+        # ==============================================================================
+        # ## 1. Prepare the Video with FFmpeg
+        # ==============================================================================
+        print("Stacking videos with FFmpeg...")
+
+        # --- Check if input files exist before trying to process them ---
+        if not os.path.exists(INPUT_COLOR_VIDEO):
+            raise FileNotFoundError(f"Input file not found: {INPUT_COLOR_VIDEO}")
+        if not os.path.exists(INPUT_DEPTH_VIDEO):
+            raise FileNotFoundError(f"Input file not found: {INPUT_DEPTH_VIDEO}")
+
+        # Ensure output video doesn't exist to avoid ffmpeg prompt
+        if os.path.exists(OUTPUT_VIDEO):
+            os.remove(OUTPUT_VIDEO)
+
+        try:
+            # --- Check for audio stream in the color video ---
+            print(f"Probing '{INPUT_COLOR_VIDEO}' for audio...")
+            has_audio = False
+            try:
+                probe = ffmpeg.probe(INPUT_COLOR_VIDEO)
+                # Check if any stream in the file is of codec_type 'audio'
+                if any(s['codec_type'] == 'audio' for s in probe['streams']):
+                    has_audio = True
+                    print("Audio stream found.")
+                else:
+                    print("No audio stream found.")
+            except ffmpeg.Error as e:
+                print("ffmpeg.probe failed, assuming no audio. Error:", e.stderr.decode())
+            
+            # Define inputs
+            input_color = ffmpeg.input(INPUT_COLOR_VIDEO)
+            input_depth = ffmpeg.input(INPUT_DEPTH_VIDEO)
+
+            # The output from the vstack filter is a video stream
+            combined_video = ffmpeg.filter([input_color.video, input_depth.video], 'vstack', inputs=2)
+
+            # --- Conditionally build the output command ---
+            if has_audio:
+                # If audio exists, include the audio stream from the color video
+                output_stream = ffmpeg.output(combined_video, input_color.audio, OUTPUT_VIDEO, vcodec='libx264', acodec='aac', preset='medium', crf=23)
+            else:
+                # If no audio, create a video-only output
+                output_stream = ffmpeg.output(combined_video, OUTPUT_VIDEO, vcodec='libx264', preset='medium', crf=23)
+
+            # Run the dynamically created command
+            output_stream.run(overwrite_output=True, capture_stdout=True, capture_stderr=True)
+
+        except ffmpeg.Error as e:
+            print('FFmpeg Error:')
+            if e.stdout:
+                print('stdout:', e.stdout.decode('utf8'))
+            if e.stderr:
+                print('stderr:', e.stderr.decode('utf8'))
+            raise e
+        
+        print(f"Video saved locally as {OUTPUT_VIDEO}")
+        print("\nStep 2: Cleaning up FFmpeg objects and running garbage collection...")
+
+        try:
+            del input_color
+            del input_depth
+            del combined_video
+            del output_stream
+        except NameError:
+            pass
+
+        gc.collect()
+        print("Memory cleaned.")
+
+        print("\nStep 3: Uploading to AWS S3...")
+
+        # The object name in the S3 bucket will be the same as the local filename.
+        object_name = os.path.basename(OUTPUT_VIDEO)
+        public_url = None
+
+        try:
+
+            print(f"Uploading '{OUTPUT_VIDEO}' to bucket '{S3_BUCKET_NAME}'...")
+            
+            with open(OUTPUT_VIDEO, "rb") as f:
+                s3_client.put_object(
+                    Bucket=S3_BUCKET_NAME,
+                    Key=object_name,
+                    Body=f, # Boto3 streams the file, which is memory-efficient
+                    ContentType='video/mp4'
+                )
+            
+            print("Upload successful.")
+
+            public_url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{object_name}"
+
+            print(f"Successfully processed and uploaded to {public_url}")
+            return jsonify({"video_url": public_url})
+
+        except NoCredentialsError:
+            print(" S3 Upload Failed: AWS credentials not found.")
+            print(" Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.")
+        except Exception as e:
+            print(f" An error occurred during the S3 upload: {e}")
+    
+    except Exception as e:
+        print(f"An error occurred in /generate-video: {e}")
+        return jsonify({"error": f"An error occurred: {e}"}), 500
+
 
 # --- Run App ---
 if __name__ == '__main__':

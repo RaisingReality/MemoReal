@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Video To Hologram</title>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <style>
+      body {
+        margin: 0;
+        background-color: #000;
+        color: #fff;
+        font-family: Monospace;
+        font-size: 13px;
+        text-align: center;
+        overflow: hidden; /* Hide scrollbars */
+      }
+      a {
+        color: #0080ff;
+      }
+      #info {
+        position: absolute;
+        top: 10px;
+        width: 100%;
+        padding: 10px;
+        box-sizing: border-box;
+        text-align: center;
+        z-index: 100;
+        display: block;
+        color: white;
+        text-shadow: 0 0 5px #000;
+        pointer-events: auto; /* Make the div clickable */
+      }
+      #video-upload {
+        margin-top: 10px;
+        color: #fff;
+        background-color: #333;
+        border: 1px solid #555;
+        padding: 5px;
+        border-radius: 3px;
+        cursor: pointer;
+      }
+      #webgl-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #video {
+        /* Video is not displayed, it's only used as a texture */
+        display: none;
+      }
+      /* Style for the WebXR button */
+      .webxr-button {
+        position: absolute;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 10px 20px;
+        background-color: #0080ff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+        z-index: 1000; /* Ensure it's on top of everything */
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">
+      Video To Hologram<br />
+      <input type="file" id="video-upload" accept="video/*" />
+      <br />
+      Drag to rotate, right click translate, scroll to zoom.
+    </div>
+
+    <video
+      id="video"
+      loop
+      crossorigin="anonymous"
+      muted
+      playsinline
+      style="display: none"
+    ></video>
+
+    <div id="container"></div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.167.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { XRButton } from "three/addons/webxr/XRButton.js";
+
+      let scene, camera, renderer, controls;
+      let video, videoTexture;
+      let particles, particleMaterial;
+      let mainScene;
+
+      let positionVariable;
+
+      let GRID_WIDTH = 1024;
+      let GRID_HEIGHT = 512;
+
+      const VISUAL_RESOLUTION_X = 1024;
+      const VISUAL_RESOLUTION_Y = 512;
+
+      let originalMainScenePosition;
+      let originalMainSceneScale = 1;
+      let interpolation = 0;
+
+      // --- Parameters for GUI ---
+      const params = {
+        particleSize: 2000.0,
+        focalLengthX: 1100.0,
+        focalLengthY: 1100.0,
+        minZ: -1000.0,
+        maxZ: -120.0,
+        playPause: () => {},
+        toggleMute: () => {},
+        reverseDepthMap: false,
+        farOffAmount: 0, // Default to 0 (no filtering)
+      };
+
+      function reinitializeWebGLResources() {
+        console.log("Reinitializing WebGL resources...");
+        if (videoTexture) {
+          videoTexture.dispose();
+        }
+        videoTexture = new THREE.VideoTexture(video);
+        videoTexture.minFilter = THREE.NearestFilter;
+        videoTexture.magFilter = THREE.NearestFilter;
+        videoTexture.format = THREE.RGBAFormat;
+        particleMaterial.uniforms.u_videoTexture.value = videoTexture;
+
+        if (!video.paused) {
+          video
+            .play()
+            .catch((e) =>
+              console.error("Video auto-play failed on context restore:", e)
+            );
+        }
+      }
+      
+      // --- NEW: Function to load video from user upload ---
+      function loadVideoFromUpload(event) {
+          const file = event.target.files[0];
+          if (file) {
+              const videoURL = URL.createObjectURL(file);
+              
+              // Revoke the previous object URL to free up memory
+              if (video.previousObjectURL) {
+                  URL.revokeObjectURL(video.previousObjectURL);
+              }
+              video.previousObjectURL = videoURL;
+              
+              video.src = videoURL;
+              video.loop = true; // Loop the uploaded video by default
+
+              if (videoTexture) {
+                  videoTexture.dispose();
+              }
+              video.load();
+              video.play().catch((e) => console.error("Video auto-play failed:", e));
+
+              videoTexture = new THREE.VideoTexture(video);
+              videoTexture.minFilter = THREE.NearestFilter;
+              videoTexture.magFilter = THREE.NearestFilter;
+              videoTexture.format = THREE.RGBAFormat;
+
+              if (particleMaterial) {
+                  particleMaterial.uniforms.u_videoTexture.value = videoTexture;
+              }
+          }
+      }
+
+
+      function createParticleGeometry(width, height) {
+        const NUM_PARTICLES = width * height;
+        const geometry = new THREE.BufferGeometry();
+        const gridUvs = new Float32Array(NUM_PARTICLES * 3);
+        const randoms = new Float32Array(NUM_PARTICLES);
+
+        let pIdx = 0;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            gridUvs[pIdx * 3 + 0] = x / (width - 1);
+            gridUvs[pIdx * 3 + 1] = y / (height - 1);
+            gridUvs[pIdx * 3 + 2] = 0;
+            randoms[pIdx] = Math.random();
+            pIdx++;
+          }
+        }
+        geometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(gridUvs, 3)
+        );
+        geometry.setAttribute(
+          "a_random",
+          new THREE.BufferAttribute(randoms, 1)
+        );
+        return geometry;
+      }
+
+      function init() {
+        const container = document.getElementById("container");
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          10000
+        );
+        camera.position.z = 210;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setClearColor(0x000000, 1);
+        renderer.shadowMap.enabled = true;
+        renderer.xr.enabled = true;
+        container.appendChild(renderer.domElement);
+        
+        // --- NEW: Add event listener for the file input ---
+        const videoUploadInput = document.getElementById('video-upload');
+        videoUploadInput.addEventListener('change', loadVideoFromUpload, false);
+
+        renderer.domElement.addEventListener(
+          "webglcontextlost",
+          function (event) {
+            event.preventDefault();
+            console.warn("WebGL Context Lost. Attempting to restore...");
+          },
+          false
+        );
+
+        renderer.domElement.addEventListener(
+          "webglcontextrestored",
+          function (event) {
+            console.log("WebGL Context Restored. Reinitializing...");
+            reinitializeWebGLResources();
+          },
+          false
+        );
+
+        document.body.appendChild(XRButton.createButton(renderer));
+
+        const originalParams = {
+          particleSize: 80.0,
+          scale: new THREE.Vector3(1, 1, 1),
+          position: new THREE.Vector3(0, 0, 0),
+        };
+
+        const webXRParams = {
+          particleSize: 2400.0,
+          scale: new THREE.Vector3(0.009, 0.009, 0.009),
+          position: new THREE.Vector3(0, 1.4, 0.5),
+        };
+
+        renderer.xr.addEventListener("sessionstart", function () {
+          console.log("WebXR session started");
+          particleMaterial.uniforms.u_size.value = webXRParams.particleSize;
+          
+          particles.scale.copy(webXRParams.scale);
+          particles.position.copy(webXRParams.position);
+        
+        });
+
+        renderer.xr.addEventListener("sessionend", function () {
+          console.log("WebXR session ended");
+          particleMaterial.uniforms.u_size.value = originalParams.particleSize;
+          
+        });
+
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+
+        video = document.getElementById("video");
+        video.muted = false; // Start with sound enabled, user can mute via GUI.
+
+        // --- Initialize an empty texture to avoid errors on startup ---
+        videoTexture = new THREE.VideoTexture(video);
+        videoTexture.minFilter = THREE.NearestFilter;
+        videoTexture.magFilter = THREE.NearestFilter;
+        videoTexture.format = THREE.RGBAFormat;
+
+        const particleGeometry = createParticleGeometry(
+          GRID_WIDTH,
+          GRID_HEIGHT
+        );
+
+        particleMaterial = new THREE.ShaderMaterial({
+          uniforms: {
+            u_videoTexture: { value: videoTexture },
+            u_size: { value: params.particleSize },
+            u_focalLengthX: { value: params.focalLengthX },
+            u_focalLengthY: { value: params.focalLengthY },
+            u_minZ: { value: params.minZ },
+            u_maxZ: { value: params.maxZ },
+            u_resolution: {
+              value: new THREE.Vector2(
+                VISUAL_RESOLUTION_X,
+                VISUAL_RESOLUTION_Y
+              ),
+            },
+            u_depthMapResolution: {
+              value: new THREE.Vector2(
+                VISUAL_RESOLUTION_X,
+                VISUAL_RESOLUTION_Y / 2
+              ),
+            },
+            u_reverseDepth: { value: params.reverseDepthMap ? 1.0 : 0.0 },
+            u_farOffAmount: { value: params.farOffAmount },
+          },
+          vertexShader: `
+                uniform sampler2D u_videoTexture;
+                uniform float u_size;
+                uniform float u_focalLengthX;
+                uniform float u_focalLengthY;
+                uniform float u_minZ;
+                uniform float u_maxZ;
+                uniform vec2 u_resolution;
+                uniform vec2 u_depthMapResolution;
+                uniform float u_reverseDepth;
+
+                varying vec2 vOriginalUv;
+                varying float vDepth;
+
+                void main() {
+                    vec2 gridUv = position.xy;
+                    vOriginalUv = gridUv;
+                    vec2 depthTextureUv = vec2(gridUv.x, gridUv.y * 0.5);
+                    vec2 depthTexelSize = 1. / u_depthMapResolution;
+                    vec2 pixelCoord = depthTextureUv * u_depthMapResolution;
+                    vec2 fractCoord = fract(pixelCoord);
+                    vec2 basePixel = floor(pixelCoord);
+                    vec2 uv00 = (basePixel + vec2(0.5, 0.5)) * depthTexelSize;
+                    vec2 uv10 = (basePixel + vec2(1.5, 0.5)) * depthTexelSize;
+                    vec2 uv01 = (basePixel + vec2(0.5, 1.5)) * depthTexelSize;
+                    vec2 uv11 = (basePixel + vec2(1.5, 1.5)) * depthTexelSize;
+                    float d00 = texture2D(u_videoTexture, uv00).r;
+                    float d10 = texture2D(u_videoTexture, uv10).r;
+                    float d01 = texture2D(u_videoTexture, uv01).r;
+                    float d11 = texture2D(u_videoTexture, uv11).r;
+                    float interp0 = mix(d00, d10, fractCoord.x);
+                    float interp1 = mix(d01, d11, fractCoord.y);
+                    float depth = mix(interp0, interp1, fractCoord.y);
+                    depth = clamp(depth, 0.0, 1.0);
+                    vDepth = depth;
+                    if (u_reverseDepth > 0.5) {
+                        depth = 1.0 - depth;
+                    }
+                    float x_pixel = (1.0 - gridUv.x) * u_resolution.x - u_resolution.x / 2.0;
+                    float y_pixel = (1.0 - gridUv.y) * u_resolution.y - u_resolution.y / 2.0;
+                    float z_world = mix(u_minZ, u_maxZ, depth);
+                    vec3 particlePosition;
+                    particlePosition.x = (x_pixel * z_world) / u_focalLengthX;
+                    particlePosition.y = (y_pixel * z_world) / u_focalLengthY;
+                    particlePosition.z = z_world;
+                    vec4 modelViewPosition = modelViewMatrix * vec4(particlePosition, 1.0);
+                    gl_Position = projectionMatrix * modelViewPosition;
+                    float objectScale = length(vec3(modelViewMatrix[0]));
+                    gl_PointSize = u_size * objectScale * (1.0 / -modelViewPosition.z);
+                }
+            `,
+          fragmentShader: `
+                uniform sampler2D u_videoTexture;
+                varying vec2 vOriginalUv;
+                varying float vDepth;
+                uniform float u_farOffAmount;
+
+                void main() {
+                    if(vOriginalUv.y > 0.994) discard;
+                    if (length(gl_PointCoord - vec2(0.5, 0.5)) > 0.5) {
+                        discard;
+                    }
+                    vec2 colorUv = vec2(vOriginalUv.x, vOriginalUv.y * 0.5 + 0.5);
+                    vec4 color = texture2D(u_videoTexture, colorUv);
+
+                    if (color.a < 0.1) discard; // Check original alpha first
+
+                    // Calculate depth fade based on slider value.
+                    float farFadeOpacity = 0.0;
+                    // Use a small epsilon to ensure slider at 0 is fully transparent.
+                    if (u_farOffAmount > 0.001) {
+                        // Fade in particles from depth 0 up to the slider value.
+                        farFadeOpacity = smoothstep(0.0, u_farOffAmount, vDepth);
+                    }else{
+                         farFadeOpacity = 1.;
+                    }
+
+                    // Apply the calculated fade.
+                    color.a *= farFadeOpacity;
+
+                    // An extra small opacity multiplier that was there before.
+                    color.a *= 0.65;
+                    if (color.a < 0.1) discard; // Check original alpha first
+
+                    gl_FragColor = color;
+                }
+            `,
+          transparent: true,
+        });
+
+        particles = new THREE.Points(particleGeometry, particleMaterial);
+        particles.frustumCulled = false;
+
+
+        mainScene = new THREE.Object3D();
+        mainScene.add(particles);
+
+        originalMainScenePosition = mainScene.position.clone();
+        scene.add(mainScene);
+
+        const gui = new dat.GUI();
+        gui.add(params, "particleSize", 2, 4000.0).onChange((value) => {
+          particleMaterial.uniforms.u_size.value = value;
+        });
+        gui.add(params, "focalLengthX", 1.0, 2000.0).onChange((value) => {
+          particleMaterial.uniforms.u_focalLengthX.value = value;
+        });
+        gui.add(params, "focalLengthY", 1.0, 2000.0).onChange((value) => {
+          particleMaterial.uniforms.u_focalLengthY.value = value;
+        });
+        gui.add(params, "minZ", -1000.0, 0.0).onChange((value) => {
+          particleMaterial.uniforms.u_minZ.value = value;
+        });
+        gui.add(params, "maxZ", -2000.0, -10.0).onChange((value) => {
+          particleMaterial.uniforms.u_maxZ.value = value;
+        });
+        gui
+          .add(params, "reverseDepthMap")
+          .name("Reverse Depth Map")
+          .onChange((value) => {
+            const val = value ? 1.0 : 0.0;
+            particleMaterial.uniforms.u_reverseDepth.value = val;
+          });
+        gui
+          .add(params, "farOffAmount", 0, 1.0)
+          .name("Far Off Filter")
+          .onChange((value) => {
+            particleMaterial.uniforms.u_farOffAmount.value = value;
+          });
+
+        
+        const videoFolder = gui.addFolder("Video Controls");
+        params.playPause = () => {
+          video.paused ? video.play() : video.pause();
+        };
+        videoFolder.add(params, "playPause").name("Play / Pause Video");
+
+        params.toggleMute = () => {
+          video.muted = !video.muted;
+        };
+        videoFolder.add(params, "toggleMute").name("Mute / Unmute Video");
+        videoFolder.open();
+      }
+
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      const clock = new THREE.Clock();
+      let lastTime = 0;
+
+      function animate() {
+        const elapsedTime = clock.getElapsedTime();
+        const deltaTime = elapsedTime - lastTime;
+        lastTime = elapsedTime;
+
+        controls.update();
+
+        renderer.render(scene, camera);
+      }
+
+      init();
+      window.addEventListener("resize", onWindowResize);
+      renderer.setAnimationLoop(animate);
+    </script>
+  </body>
+</html>

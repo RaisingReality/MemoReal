@@ -33,11 +33,14 @@ filelock
 flake8>=7.0.0
 flake8-bugbear>=24.2.6
 flake8-comprehensions>=3.14.0
+ffmpeg-python
 fonttools
 fsspec
 fvcore>=0.1.5.post20221221
 gitdb
 GitPython
+gradio
+gradio_client
 idna
 imageio
 imath
@@ -70,6 +73,7 @@ pyflakes
 pyparsing
 python-dateutil
 pytz
+pygltflib
 PyYAML
 requests
 safetensors

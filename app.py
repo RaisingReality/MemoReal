@@ -245,7 +245,7 @@ def generate_video():
         client = Client("depth-anything/Video-Depth-Anything")
         
         result = client.predict(
-            input_video=temp_video_path,
+            input_video={"video":handle_file(temp_video_path)},
             max_len=500,
             target_fps=30,
             max_res=1920,

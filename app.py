@@ -246,7 +246,7 @@ def generate_video():
         
         result = client.predict(
             input_video={"video":handle_file(temp_video_path)},
-            max_len=500,
+            max_len=1000,
             target_fps=30,
             max_res=1920,
             grayscale=True,
